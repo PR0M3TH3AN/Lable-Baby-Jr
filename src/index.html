@@ -5633,7 +5633,7 @@
       <details id="nostrRelayDetails" open style="margin-top:8px;border-top:1px solid var(--line);padding-top:10px">
         <summary style="font-weight:700;font-size:.82rem;cursor:pointer;color:var(--muted)">Relay settings</summary>
         <label for="relayList" style="margin-top:8px;display:block;font-size:.8rem;font-weight:650;color:#374151">Nostr relays</label>
-        <input id="relayList" type="text" placeholder="wss://relay.damus.io, wss://nos.lol, wss://relay.primal.net, wss://relay.snort.social, wss://relay.nostr.band" style="margin-top:4px" />
+        <input id="relayList" type="text" placeholder="wss://nos.lol, wss://nostr.mom, wss://relay.nostr.net, wss://nostr.oxtr.dev, wss://relay.damus.io, wss://relay.primal.net" style="margin-top:4px" />
         <p class="hint">Separate multiple relays with commas. Changing relays clears the template cache.</p>
       </details>
       <details id="softModDetails" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;display:none">
@@ -14671,7 +14671,26 @@
       { value: 'other', label: 'Other' }
     ];
 
+    // Read reach is what makes the community browser feel alive, so the
+    // default set is chosen by measurement, not reputation. The previous list
+    // had only one relay actually serving `casewrap` events — damus refused
+    // the socket outright, nostr.band never answered, and primal / snort
+    // returned a single event — which left the whole feed resting on nos.lol.
+    // The four leading entries below each returned a full page of designs.
+    // damus and primal stay on for publishing reach (they are what most other
+    // clients read from) even though they contribute little on the read side.
     const DEFAULT_NOSTR_RELAYS = [
+      'wss://nos.lol',
+      'wss://nostr.mom',
+      'wss://relay.nostr.net',
+      'wss://nostr.oxtr.dev',
+      'wss://relay.damus.io',
+      'wss://relay.primal.net'
+    ];
+    // The exact list above, as shipped before the measurement pass. A user
+    // still carrying it verbatim gets upgraded on load; anyone who edited
+    // their relays keeps their own choices untouched.
+    const LEGACY_DEFAULT_NOSTR_RELAYS = [
       'wss://relay.damus.io',
       'wss://nos.lol',
       'wss://relay.primal.net',
@@ -14884,6 +14903,27 @@
     function relayIsCoolingDown(relay, now = Date.now()) {
       const entry = getRelayHealth(relay);
       return !!entry?.cooldownUntil && entry.cooldownUntil > now;
+    }
+
+    // Upgrade anyone still carrying the old shipped relay list verbatim. Three
+    // of its five entries no longer serve reads, which left the community
+    // browser looking empty. A user who has edited their relays at all — added,
+    // removed or reordered — is left alone; their list is their choice.
+    function migrateLegacyDefaultRelays() {
+      try {
+        const current = splitRelayList(state.community?.relays || '').map(normalizeRelayHealthRelay);
+        const legacy = LEGACY_DEFAULT_NOSTR_RELAYS.map(normalizeRelayHealthRelay);
+        if (current.length !== legacy.length) return;
+        const same = [...current].sort().join('|') === [...legacy].sort().join('|');
+        if (!same) return;
+        state.community.relays = DEFAULT_NOSTR_RELAYS.join(', ');
+        // The dead entries have stale failure records; drop them so the new
+        // set starts from a clean slate rather than an inherited cooldown.
+        state.community.relayHealth = {};
+        saveRelayHealth({});
+      } catch {
+        // Never let a migration stop the app from loading.
+      }
     }
 
     function getActiveRelays(relays = splitRelayList(state.community.relays), { includeCoolingDown = false } = {}) {
@@ -15338,7 +15378,14 @@
           return;
         }
 
-        const timer = setTimeout(() => finish(false, 'Query timed out'), timeoutMs);
+        // A relay that accepts the socket and then never answers is the worst
+        // kind: it costs the full timeout on every query. Mark it failed like
+        // any other error so it cools down instead of being retried forever.
+        const timer = setTimeout(() => {
+          if (done) return;
+          markRelayFailure(relay, 'Query timed out', { context: 'read' });
+          finish(false, 'Query timed out');
+        }, timeoutMs);
         const subId = `sub-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
         ws.addEventListener('open', () => {
           try {
@@ -23175,15 +23222,58 @@
       return true;
     }
 
+    // Which feed filters pixel-art import mode overrides, so leaving the mode
+    // can put every one of them back exactly as the user had it.
+    const PIXEL_IMPORT_FILTER_KEYS = ['filterNew', 'filterPopular', 'filterSearch', 'filterMine'];
+
+    // The community modal is closed from a dozen different places and there is
+    // no single close function to hook. Watch the element itself instead, so
+    // import mode can never outlive the modal no matter which path closed it —
+    // including any call site added later.
+    function watchNostrModalClose() {
+      const modal = $('nostrModal');
+      if (!modal || modal._importModeWatcher) return;
+      let wasOpen = modal.classList.contains('open');
+      const observer = new MutationObserver(() => {
+        const isOpen = modal.classList.contains('open');
+        if (wasOpen && !isOpen) exitPixelArtImportBrowser();
+        wasOpen = isOpen;
+      });
+      observer.observe(modal, { attributes: true, attributeFilter: ['class'] });
+      modal._importModeWatcher = observer;
+    }
+
     function openPixelArtImportBrowser() {
+      // Remember the user's own filters first. Without this the pixel-art
+      // override leaked: the community browser stayed pinned to pixel-art for
+      // the rest of the session, so "Browse Templates" looked like it had
+      // stopped finding anything.
+      if (!state._pixelArtImportMode) {
+        const saved = { nostrType: $('nostrType')?.value ?? '' };
+        for (const key of PIXEL_IMPORT_FILTER_KEYS) saved[key] = _feedState[key];
+        state._pixelArtImportPrevFilters = saved;
+      }
       state._pixelArtImportMode = true;
       $('nostrType').value = 'pixelart';
-      _feedState.filterNew = 'pixelart';
-      _feedState.filterPopular = 'pixelart';
-      _feedState.filterSearch = 'pixelart';
-      _feedState.filterMine = 'pixelart';
+      for (const key of PIXEL_IMPORT_FILTER_KEYS) _feedState[key] = 'pixelart';
       $('nostrModal')?.classList.add('open');
       if (typeof switchModalTab === 'function') switchModalTab('New');
+    }
+
+    // Leave pixel-art import mode and restore the user's own feed filters.
+    // Called whether the browser was used, dismissed, or closed any other way,
+    // so the mode can never outlive the modal.
+    function exitPixelArtImportBrowser() {
+      if (!state._pixelArtImportMode) return;
+      state._pixelArtImportMode = false;
+      const saved = state._pixelArtImportPrevFilters;
+      state._pixelArtImportPrevFilters = null;
+      if (!saved) return;
+      const typeEl = $('nostrType');
+      if (typeEl) typeEl.value = saved.nostrType || '';
+      for (const key of PIXEL_IMPORT_FILTER_KEYS) {
+        _feedState[key] = saved[key] === undefined ? 'any' : saved[key];
+      }
     }
 
     // Intercept a community-browser selection while pixel-art import mode is
@@ -23191,9 +23281,9 @@
     // loading it as the current document.
     function tryPixelArtImportRow(row) {
       if (!state._pixelArtImportMode) return false;
-      state._pixelArtImportMode = false;
       try { closeNostrPreview(); } catch (e) {}
       $('nostrModal')?.classList.remove('open');
+      exitPixelArtImportBrowser();
       if (row && row.payload) importPixelArtAsLayer(row.payload);
       return true;
     }
@@ -39369,6 +39459,7 @@
         pixelToolMenuToggle(false);
         addPixelArtLayer();
       });
+      watchNostrModalClose();
       $('pixelImportNostrBtn')?.addEventListener('click', () => {
         pixelToolMenuToggle(false);
         openPixelArtImportBrowser();
@@ -41060,6 +41151,7 @@
         });
         normalizeDiscState();
         normalizeJewelState();
+        migrateLegacyDefaultRelays();
         // JSON can't represent a Set — autosave round-trips Sets as `{}`.
         // Re-init the community Sets so feed code (trustTierForPubkey,
         // _blockedAuthors etc) gets the right shape after restore.
