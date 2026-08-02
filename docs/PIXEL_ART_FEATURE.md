@@ -133,6 +133,22 @@ All four phases shipped.
   local colour tables, transparency, and all three disposal methods
   (frames composite over their predecessor, so partial
   "changed-rectangle" frames render correctly).
+  - **Disposal 2 and mis-tagged deltas.** Disposal 2 ("restore to
+    background") is implemented as a clear to transparent, as every
+    browser does — the spec's background colour is routinely garbage,
+    pointing at an unrelated palette slot. The clear is suppressed in
+    exactly one case: a **full-canvas** frame in an animation whose
+    **first frame was fully opaque**. Such a file demonstrably has a
+    baked-in background, so "restore to background" cannot mean "erase
+    to nothing"; in practice these are deltas whose exporter marked the
+    unchanged background as the transparent index to shrink each frame,
+    and honouring the clear punches the background out of every later
+    frame. Both conditions are load-bearing — full-canvas only, so
+    sprite erasure (disposal 2 on a small rect, the case the method
+    exists for) still leaves no trail; opaque-first-frame only, so an
+    animation on genuine transparency — including our own exporter's
+    output, which also writes full-canvas disposal-2 frames — keeps its
+    transparency and leaves no trail either.
   - **One shared palette** across every frame, quantized from all
     frames together — per-frame palettes made an animation shimmer
     and burned through the 256-entry cap.

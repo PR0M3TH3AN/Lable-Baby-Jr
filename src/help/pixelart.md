@@ -43,6 +43,9 @@ Palette-indexed grid editor for sprite work + simple animation.
   between frames, playback FPS is derived from the GIF's own frame
   delays, and **Frames** samples a long animation down evenly. A GIF
   already at grid size and palette-limited imports pixel-exact.
+  Animations with a baked-in background keep it on every frame, even
+  when the file was exported as space-saving delta frames; animations
+  on genuine transparency stay transparent.
 - Selecting several image files at once imports them as consecutive
   frames, in pick order.
 - **Apply to** decides where the import lands. Current frame / New
