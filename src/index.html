@@ -3441,7 +3441,11 @@
     .qrInsertBtn { flex: 1; font-size: .72rem; padding: 4px 6px; }
     .pixelizePreviewRow { display: flex; gap: 12px; margin: 0 0 10px; }
     .pixelizePreviewBox { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-    .pixelizePreviewLabel { font-size: .72rem; color: #64748b; font-weight: 600; }
+    .pixelizePreviewLabel {
+      font-size: .72rem; color: #64748b; font-weight: 600;
+      display: flex; align-items: baseline; gap: 6px; justify-content: space-between;
+    }
+    .pixelizePreviewDims { font-weight: 400; font-size: .68rem; color: #94a3b8; }
     .pixelizePreviewArea {
       width: 100%; aspect-ratio: 1;
       background: repeating-conic-gradient(#e2e8f0 0% 25%, #f8fafc 0% 50%) 0 0 / 14px 14px;
@@ -3449,9 +3453,18 @@
       display: flex; align-items: center; justify-content: center;
       overflow: hidden;
     }
+    /* Both preview canvases are drawn at the *same* framed aspect and then
+       scaled up to fill the box, so Cover / Fit / Stretch are directly
+       comparable side by side. Explicit width/height come from
+       _pixelizeFitPreviewEl — these are the fallback. */
     .pixelizePreviewArea img, .pixelizePreviewArea canvas {
       max-width: 100%; max-height: 100%; display: block;
+    }
+    .pixelizePreviewArea canvas.pixelizeCrisp {
       image-rendering: pixelated; image-rendering: crisp-edges;
+    }
+    .pixelizeLockHint {
+      font-size: .7rem; color: #94a3b8; margin: -4px 0 8px; display: none;
     }
     .pixelizeRow { display: flex; gap: 10px; align-items: center; margin: 0 0 8px; }
     .pixelizeField {
@@ -5108,8 +5121,8 @@
                 <button type="button" id="pixelResizeApplyBtn" class="pixelBarBtn primary">Apply</button>
               </div>
             </div>
-            <button type="button" id="pixelEditorImageBtn" class="pixelBarBtn" title="Pixelize an image into this design">From image…</button>
-            <input id="pixelEditorImageFile" type="file" accept="image/*" multiple hidden />
+            <button type="button" id="pixelEditorImageBtn" class="pixelBarBtn" title="Pixelize an image into this design. An animated GIF imports frame by frame.">From image / GIF…</button>
+            <input id="pixelEditorImageFile" type="file" accept="image/*,.gif" multiple hidden />
             <div class="pixelExportWrap">
               <button type="button" id="pixelExportPngBtn" class="pixelBarBtn" aria-haspopup="true" aria-expanded="false">Export PNG ▾</button>
               <div id="pixelExportMenu" class="pixelExportMenu">
@@ -5809,23 +5822,28 @@
   <div class="modal" id="pixelizeModal" aria-hidden="true" style="display:none">
     <div class="modalInner" style="max-width:560px;position:relative">
       <button type="button" id="pixelizeCloseBtn" class="welcomeCloseBtn" aria-label="Close">×</button>
-      <h2 style="margin:0 0 4px;font-size:1.05rem;font-family:inherit">Pixelize image</h2>
-      <p class="hint" style="margin:0 0 12px">Downscale a picture to a pixel-art grid. Tweak the controls — the preview updates live.</p>
+      <h2 id="pixelizeTitle" style="margin:0 0 4px;font-size:1.05rem;font-family:inherit">Pixelize image</h2>
+      <p class="hint" id="pixelizeIntro" style="margin:0 0 12px">Downscale a picture to a pixel-art grid. Tweak the controls — the preview updates live.</p>
       <div class="pixelizePreviewRow">
         <div class="pixelizePreviewBox">
-          <div class="pixelizePreviewLabel"><span id="pixelizeSourceLabel">Source</span></div>
+          <div class="pixelizePreviewLabel"><span id="pixelizeSourceLabel">Source</span><span class="pixelizePreviewDims" id="pixelizeSourceDims"></span></div>
           <div class="pixelizePreviewArea" id="pixelizeSourceWrap"></div>
         </div>
         <div class="pixelizePreviewBox">
-          <div class="pixelizePreviewLabel">Pixelized</div>
+          <div class="pixelizePreviewLabel"><span>Pixelized</span><span class="pixelizePreviewDims" id="pixelizeOutDims"></span></div>
           <div class="pixelizePreviewArea" id="pixelizeOutWrap"></div>
         </div>
       </div>
       <div class="pixelizeRow">
         <label class="pixelizeField">W <input type="number" id="pixelizeW" min="4" max="128" step="1" value="32" /></label>
         <label class="pixelizeField">H <input type="number" id="pixelizeH" min="4" max="128" step="1" value="32" /></label>
-        <label class="pixelizeField">Colors <input type="number" id="pixelizeColors" min="2" max="64" step="1" value="16" /></label>
+        <label class="pixelizeField">Colors <input type="number" id="pixelizeColors" min="2" max="256" step="1" value="16" /></label>
       </div>
+      <div class="pixelizeRow" id="pixelizeFramesRow" style="display:none">
+        <label class="pixelizeField" style="flex:0 0 auto">Frames <input type="number" id="pixelizeFrames" min="1" max="240" step="1" value="1" /></label>
+        <span class="hint" id="pixelizeFramesHint" style="margin:0;font-size:.72rem;flex:1"></span>
+      </div>
+      <p class="pixelizeLockHint" id="pixelizeLockHint"></p>
       <div class="pixelizeRow">
         <span class="pixelExportLabel" style="flex:0 0 auto">Fit</span>
         <div class="pixelExportScales" id="pixelizeFitMode" style="grid-template-columns:repeat(3,1fr);flex:1">
@@ -5842,7 +5860,7 @@
           <button type="button" data-target="all" class="pixelExportScaleBtn">Whole sprite</button>
         </div>
       </div>
-      <p class="hint" style="margin:8px 0 0;font-size:.72rem">Cover = fill the grid (crops edges). Fit = letterbox with transparent. Stretch = ignore aspect. Current frame / New frame keep the existing grid &amp; palette (merging new colours in); Whole sprite replaces everything.</p>
+      <p class="hint" style="margin:8px 0 0;font-size:.72rem">Cover = fill the grid (crops edges). Fit = letterbox with transparent. Stretch = ignore aspect. Current frame / New frame keep the existing grid &amp; palette (merging new colours in); Whole sprite replaces everything and is the only target that can change the grid size. Multi-frame sources share one palette across all frames.</p>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button type="button" id="pixelizeCancelBtn">Cancel</button>
         <button type="button" id="pixelizeAddBtn" class="primary">Apply</button>
@@ -18618,6 +18636,14 @@
       }
     }
 
+    // Same thing, coalesced — for high-frequency mutators like a pixel-editor
+    // stroke, where serialising every frame on every commit would be wasteful.
+    let _persistAutosaveTimer = 0;
+    function persistAutosaveDebounced(delay = 500) {
+      clearTimeout(_persistAutosaveTimer);
+      _persistAutosaveTimer = setTimeout(persistAutosave, delay);
+    }
+
     function render() {
       // Rebuild global clip-path <defs> before any renderer so layer
       // wrappers can reference them via clip-path: url(#…).
@@ -21192,6 +21218,243 @@
       return new Blob([data], { type: 'image/gif' });
     }
 
+    // ---- Inline GIF87a/89a decoder ------------------------------------
+    // The mirror of the encoder above. A browser `<img>` only ever exposes an
+    // animated GIF's *first* frame to canvas, so importing an animation frame
+    // by frame needs a real decoder. Same rule as the encoder: no vendored
+    // dependency — a GIF is a small, well-specified format.
+    //
+    // Output is one composited RGBA canvas per frame (disposal methods
+    // applied), which then feeds the ordinary pixelize pipeline.
+
+    // LZW decode one image's sub-block payload into `pixelCount` palette
+    // indices. Codes are packed LSB-first and the code width grows from
+    // minCodeSize+1 up to 12 bits as the dictionary fills.
+    function _gifLzwDecode(data, minCodeSize, pixelCount) {
+      const MAX = 4096;
+      const clear = 1 << minCodeSize;
+      const eoi = clear + 1;
+      const prefix = new Int32Array(MAX);
+      const suffix = new Uint8Array(MAX);
+      const stack = new Uint8Array(MAX + 1);
+      const out = new Uint8Array(pixelCount);
+      for (let i = 0; i < clear; i++) { prefix[i] = -1; suffix[i] = i; }
+      let codeSize = minCodeSize + 1;
+      let next = eoi + 1;
+      let bit = 0, o = 0, prev = -1, firstChar = 0;
+      const totalBits = data.length * 8;
+      while (o < pixelCount) {
+        if (bit + codeSize > totalBits) break;
+        let code = 0;
+        for (let i = 0; i < codeSize; i++) {
+          const b = bit + i;
+          code |= ((data[b >> 3] >> (b & 7)) & 1) << i;
+        }
+        bit += codeSize;
+        if (code === clear) {
+          codeSize = minCodeSize + 1;
+          next = eoi + 1;
+          prev = -1;
+          continue;
+        }
+        if (code === eoi) break;
+        if (code > next) break; // corrupt stream — stop, keep what we have
+        let cur = code, sp = 0;
+        if (cur === next) {
+          // KwKwK: the code being defined this step. Its string is the
+          // previous string plus that string's own first character.
+          if (prev < 0) break;
+          stack[sp++] = firstChar;
+          cur = prev;
+        }
+        while (cur >= clear) { stack[sp++] = suffix[cur]; cur = prefix[cur]; if (cur < 0) break; }
+        if (cur < 0) break;
+        firstChar = cur & 0xff;
+        stack[sp++] = firstChar;
+        while (sp > 0 && o < pixelCount) out[o++] = stack[--sp];
+        if (prev >= 0 && next < MAX) {
+          prefix[next] = prev;
+          suffix[next] = firstChar;
+          next++;
+          if (next === (1 << codeSize) && codeSize < 12) codeSize++;
+        }
+        prev = code;
+      }
+      return out;
+    }
+
+    // Interlaced GIFs store rows in four passes; this maps decoded row order
+    // back to real image rows.
+    function _gifInterlaceMap(h) {
+      const rows = new Int32Array(h);
+      let r = 0;
+      for (let y = 0; y < h; y += 8) rows[r++] = y;
+      for (let y = 4; y < h; y += 8) rows[r++] = y;
+      for (let y = 2; y < h; y += 4) rows[r++] = y;
+      for (let y = 1; y < h; y += 2) rows[r++] = y;
+      return rows;
+    }
+
+    // Decode an animated GIF into composited frames.
+    // Returns { width, height, frames: [{ canvas, delayMs }] } or throws.
+    //
+    // `maxFrames` evenly samples long animations, and the working canvas is
+    // capped so a big, long GIF can't blow out memory — both are reported back
+    // via the returned `sampled` / `scaled` flags so the caller can say so.
+    function decodeGifFrames(buffer, opts = {}) {
+      const d = new Uint8Array(buffer);
+      if (d.length < 13 || d[0] !== 0x47 || d[1] !== 0x49 || d[2] !== 0x46) {
+        throw new Error('Not a GIF file.');
+      }
+      let p = 6;
+      const rdU16 = () => { const v = d[p] | (d[p + 1] << 8); p += 2; return v; };
+      const gw = rdU16(), gh = rdU16();
+      if (!gw || !gh) throw new Error('GIF has no size.');
+      const packed = d[p++];
+      const gctSize = 2 << (packed & 7);
+      p += 2; // background colour index + pixel aspect ratio
+      let gct = null;
+      if (packed & 0x80) { gct = d.subarray(p, p + gctSize * 3); p += gctSize * 3; }
+
+      const readSubBlocks = () => {
+        const chunks = [];
+        let total = 0, size;
+        while (p < d.length && (size = d[p++]) !== 0) {
+          const end = Math.min(p + size, d.length);
+          chunks.push(d.subarray(p, end));
+          total += end - p;
+          p = end;
+        }
+        if (chunks.length === 1) return chunks[0];
+        const out = new Uint8Array(total);
+        let o = 0;
+        for (const c of chunks) { out.set(c, o); o += c.length; }
+        return out;
+      };
+
+      // Composition buffer — every frame is painted over the previous result
+      // (per its predecessor's disposal method), which is what makes partial
+      // "only the changed rectangle" frames render correctly.
+      const comp = new Uint8ClampedArray(gw * gh * 4);
+      let gce = { delayMs: 100, transparentIndex: -1, disposal: 0 };
+      const raw = [];
+      const HARD_FRAME_CAP = 400;
+
+      while (p < d.length) {
+        const block = d[p++];
+        if (block === 0x3B) break;              // trailer
+        if (block === 0x21) {                   // extension
+          const label = d[p++];
+          if (label === 0xF9) {                 // graphic control
+            const size = d[p++];
+            const flags = d[p];
+            const delay = d[p + 1] | (d[p + 2] << 8);
+            const tIdx = d[p + 3];
+            p += size;
+            while (p < d.length && d[p] !== 0) p += d[p] + 1;
+            p++;                                // block terminator
+            gce = {
+              // A 0 or 1 centisecond delay means "as fast as possible"; every
+              // renderer substitutes 100ms, so we do too.
+              delayMs: delay > 1 ? delay * 10 : 100,
+              transparentIndex: (flags & 1) ? tIdx : -1,
+              disposal: (flags >> 2) & 7,
+            };
+          } else {
+            readSubBlocks();                    // comment / application / plain text
+          }
+          continue;
+        }
+        if (block !== 0x2C) break;              // unknown block — stop cleanly
+
+        const ix = rdU16(), iy = rdU16(), iw = rdU16(), ih = rdU16();
+        const ipacked = d[p++];
+        const interlace = !!(ipacked & 0x40);
+        let ct = gct;
+        if (ipacked & 0x80) {
+          const lctSize = 2 << (ipacked & 7);
+          ct = d.subarray(p, p + lctSize * 3);
+          p += lctSize * 3;
+        }
+        const minCodeSize = d[p++];
+        const payload = readSubBlocks();
+        if (!iw || !ih || !ct) continue;
+        const indices = _gifLzwDecode(payload, minCodeSize, iw * ih);
+
+        // Disposal 3 restores what was on screen *before* this frame.
+        const restore = gce.disposal === 3 ? comp.slice() : null;
+        const rowMap = interlace ? _gifInterlaceMap(ih) : null;
+        for (let r = 0; r < ih; r++) {
+          const gy = iy + (rowMap ? rowMap[r] : r);
+          if (gy < 0 || gy >= gh) continue;
+          const srcRow = r * iw;
+          for (let cx = 0; cx < iw; cx++) {
+            const gx = ix + cx;
+            if (gx < 0 || gx >= gw) continue;
+            const ci = indices[srcRow + cx];
+            if (ci === gce.transparentIndex) continue; // see through to the composite
+            const o = (gy * gw + gx) * 4;
+            const c = ci * 3;
+            comp[o] = ct[c]; comp[o + 1] = ct[c + 1]; comp[o + 2] = ct[c + 2]; comp[o + 3] = 255;
+          }
+        }
+        raw.push({ rgba: comp.slice(), delayMs: gce.delayMs });
+
+        if (gce.disposal === 2) {
+          // Restore to background — the spec's background colour, but every
+          // real renderer clears to transparent, and so do we.
+          for (let r = 0; r < ih; r++) {
+            const gy = iy + r;
+            if (gy < 0 || gy >= gh) continue;
+            const start = (gy * gw + Math.max(0, ix)) * 4;
+            const len = Math.max(0, Math.min(iw, gw - ix)) * 4;
+            comp.fill(0, start, start + len);
+          }
+        } else if (restore) {
+          comp.set(restore);
+        }
+        gce = { delayMs: 100, transparentIndex: -1, disposal: 0 };
+        if (raw.length >= HARD_FRAME_CAP) break;
+      }
+
+      if (!raw.length) throw new Error('No frames found in that GIF.');
+
+      // Even-sample overlong animations, then bound the working resolution so
+      // frames × pixels stays inside a sane memory budget.
+      const maxFrames = Math.max(1, Math.min(HARD_FRAME_CAP, opts.maxFrames | 0 || 120));
+      let picked = raw;
+      if (raw.length > maxFrames) {
+        picked = [];
+        for (let i = 0; i < maxFrames; i++) picked.push(raw[Math.round(i * (raw.length - 1) / (maxFrames - 1 || 1))]);
+      }
+      const PIXEL_BUDGET = 12e6;
+      let scale = 1;
+      while (picked.length * (gw / scale) * (gh / scale) > PIXEL_BUDGET) scale *= 2;
+      const outW = Math.max(1, Math.round(gw / scale));
+      const outH = Math.max(1, Math.round(gh / scale));
+
+      const native = document.createElement('canvas');
+      native.width = gw; native.height = gh;
+      const nctx = native.getContext('2d');
+      const frames = picked.map(({ rgba, delayMs }) => {
+        nctx.putImageData(new ImageData(rgba, gw, gh), 0, 0);
+        const cv = document.createElement('canvas');
+        cv.width = outW; cv.height = outH;
+        const ctx = cv.getContext('2d');
+        ctx.imageSmoothingEnabled = scale > 1;
+        ctx.drawImage(native, 0, 0, outW, outH);
+        return { canvas: cv, delayMs };
+      });
+      return {
+        width: outW, height: outH,
+        naturalWidth: gw, naturalHeight: gh,
+        frames,
+        totalFrames: raw.length,
+        sampled: picked.length < raw.length,
+        scaled: scale > 1,
+      };
+    }
+
     // Decode a pixel grid to a native-size offscreen canvas. `frameIndex`
     // selects which frame to render — defaults to 0 (the cover frame), which
     // keeps every existing single-frame caller working unchanged.
@@ -21467,6 +21730,33 @@
     let _pixelEditActive = false;
     let _pixelEdit = null;
 
+    // Pick the largest zoom step whose whole grid still fits the editor
+    // viewport, and redraw. Deferred a frame because the viewport has no size
+    // until the view has been laid out.
+    function pixelFitZoom() {
+      requestAnimationFrame(() => {
+        if (!_pixelEdit) return;
+        const wrap = $('pixelEditorCanvasWrap');
+        const availW = (wrap?.clientWidth || 640) - 28;
+        const availH = (wrap?.clientHeight || 420) - 28;
+        let z = PIXEL_ZOOMS[0];
+        for (const cand of PIXEL_ZOOMS) {
+          if (cand * _pixelEdit.w <= availW && cand * _pixelEdit.h <= availH) z = cand;
+        }
+        _pixelEdit.zoom = z;
+        renderPixelGrid();
+      });
+    }
+
+    // Reflect a grid-size change in the editor's own dimension button and in
+    // the top status pill, which otherwise only refreshes on a full render().
+    function pixelSyncDims() {
+      if (!_pixelEdit) return;
+      const dims = $('pixelEditorDims');
+      if (dims) dims.textContent = `${_pixelEdit.w} × ${_pixelEdit.h} px`;
+      if (_pixelEdit.standalone) { try { renderDimensions(); } catch (e) {} }
+    }
+
     function openPixelEditor(layerId) {
       const layer = getLayer(layerId);
       if (!layer || layer.type !== 'pixelart') return;
@@ -21490,19 +21780,7 @@
       };
       _pixelEditActive = true;
       document.body.classList.add('pixel-editing');
-      // Fit zoom: the largest step that fits the editor viewport.
-      requestAnimationFrame(() => {
-        if (!_pixelEdit) return;
-        const wrap = $('pixelEditorCanvasWrap');
-        const availW = (wrap?.clientWidth || 640) - 28;
-        const availH = (wrap?.clientHeight || 420) - 28;
-        let z = PIXEL_ZOOMS[0];
-        for (const cand of PIXEL_ZOOMS) {
-          if (cand * w <= availW && cand * h <= availH) z = cand;
-        }
-        _pixelEdit.zoom = z;
-        renderPixelGrid();
-      });
+      pixelFitZoom();
       pixelSyncToolButtons();
       const gt = $('pixelGridToggle'); if (gt) gt.checked = true;
       const mx = $('pixelMirrorX'); if (mx) mx.checked = false;
@@ -21667,6 +21945,7 @@
       if (dims) dims.textContent = `${s.w} × ${s.h} px`;
       renderPixelGrid();
       renderPixelTimeline();
+      pixelFitZoom();
     }
     function pixelSnapshot() {
       if (!_pixelEdit) return;
@@ -21828,11 +22107,12 @@
       _pixelEdit.w = newW;
       _pixelEdit.h = newH;
       _pixelEdit.indices = _pixelEdit.frames[_pixelEdit.currentFrame].indices;
-      const dims = $('pixelEditorDims');
-      if (dims) dims.textContent = `${newW} × ${newH} px`;
       renderPixelGrid();
       renderPixelTimeline();
       pixelCommitIfStandalone();
+      pixelSyncDims(); // after the commit — the status pill reads state.pixelArt
+      // The old zoom can leave a grown grid scrolled off-screen.
+      pixelFitZoom();
     }
 
     // Playback state — one global instance; only ever active while
@@ -22123,13 +22403,31 @@
     // #rrggbbff hex strings with index 0 reserved as transparent.
     function _pixelMedianCut(rgbaPixels, n) {
       const opaque = [];
+      const distinct = new Set();
+      const wantColours = Math.max(1, (n | 0) - 1); // reserve slot 0 for transparent
       for (let i = 0; i < rgbaPixels.length; i += 4) {
         if (rgbaPixels[i + 3] >= 128) {
           opaque.push([rgbaPixels[i], rgbaPixels[i + 1], rgbaPixels[i + 2]]);
+          if (distinct.size <= wantColours) {
+            distinct.add((rgbaPixels[i] << 16) | (rgbaPixels[i + 1] << 8) | rgbaPixels[i + 2]);
+          }
         }
       }
-      const wantColours = Math.max(1, (n | 0) - 1); // reserve slot 0 for transparent
       if (!opaque.length) return ['#00000000'];
+      // Fewer distinct colours than we were asked for: keep them exactly.
+      // Median cut would otherwise keep splitting until it hit the requested
+      // count, emitting duplicate averages — a palette padded with dead
+      // entries that cost event-size budget and shift nothing visually. This
+      // also makes importing art that is already palette-limited (a pixel-art
+      // GIF, say) colour-exact rather than merely close.
+      if (distinct.size <= wantColours) {
+        const exact = ['#00000000'];
+        const toHex = (v) => v.toString(16).padStart(2, '0');
+        for (const key of distinct) {
+          exact.push('#' + toHex((key >> 16) & 255) + toHex((key >> 8) & 255) + toHex(key & 255) + 'ff');
+        }
+        return exact;
+      }
       let buckets = [opaque];
       while (buckets.length < wantColours) {
         // Pick the bucket with the widest single-channel range.
@@ -22150,13 +22448,19 @@
         const mid = b.length >> 1;
         buckets.splice(bestIdx, 1, b.slice(0, mid), b.slice(mid));
       }
+      // Two buckets can average to the same colour; nearest-match would only
+      // ever reach the first of them, so a duplicate is a dead palette entry.
       const palette = ['#00000000'];
+      const seen = new Set();
       for (const b of buckets) {
         let r = 0, g = 0, bb = 0;
         for (const p of b) { r += p[0]; g += p[1]; bb += p[2]; }
         const n = b.length || 1;
         const toHex = (v) => Math.round(v / n).toString(16).padStart(2, '0');
-        palette.push('#' + toHex(r) + toHex(g) + toHex(bb) + 'ff');
+        const hex = '#' + toHex(r) + toHex(g) + toHex(bb) + 'ff';
+        if (seen.has(hex)) continue;
+        seen.add(hex);
+        palette.push(hex);
       }
       return palette;
     }
@@ -22178,19 +22482,14 @@
       return best;
     }
 
-    // Build the downsampled RGBA buffer at the target grid, handling the
-    // three fit modes: cover (fill, crop edges), contain (letterbox, pad
-    // with transparent), stretch (ignore aspect). Uses an off-screen canvas
-    // and the browser's built-in nearest-neighbour scaler.
-    function _pixelDownsampleImage(img, w, h, fit) {
-      const out = document.createElement('canvas');
-      out.width = w; out.height = h;
-      const ctx = out.getContext('2d');
-      ctx.imageSmoothingEnabled = false;
-      ctx.clearRect(0, 0, w, h);
-      const iw = img.naturalWidth || img.width;
-      const ih = img.naturalHeight || img.height;
-      if (!iw || !ih) return ctx.getImageData(0, 0, w, h);
+    // Work out the source→target rectangles for a fit mode. Shared by the
+    // downsampler and the modal's source preview so the two panes frame the
+    // image identically — that is what makes Cover / Fit / Stretch legible
+    // side by side.
+    //   cover   — fill the grid, cropping the overflowing axis
+    //   contain — letterbox inside the grid, padding with transparent
+    //   stretch — ignore aspect entirely
+    function _pixelFitGeometry(iw, ih, w, h, fit) {
       let dx = 0, dy = 0, dw = w, dh = h;
       let sx = 0, sy = 0, sw = iw, sh = ih;
       if (fit === 'contain') {
@@ -22201,67 +22500,226 @@
         dy = ((h - dh) / 2) | 0;
       } else if (fit === 'cover') {
         const ratio = Math.max(w / iw, h / ih);
-        const scaledW = iw * ratio;
-        const scaledH = ih * ratio;
-        sw = Math.round(w / ratio);
-        sh = Math.round(h / ratio);
+        sw = Math.min(iw, Math.round(w / ratio));
+        sh = Math.min(ih, Math.round(h / ratio));
         sx = ((iw - sw) / 2) | 0;
         sy = ((ih - sh) / 2) | 0;
       }
-      // 'stretch' uses defaults: sx=0,sy=0,sw=iw,sh=ih,dx=0,dy=0,dw=w,dh=h
-      ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+      // 'stretch' keeps the defaults: the whole source onto the whole grid.
+      return { sx, sy, sw, sh, dx, dy, dw, dh };
+    }
+
+    // Draw a source into a target rect with an appropriate scaler.
+    // Point-sampling a photo down to 32px throws away ~99.9% of it and lands
+    // on whatever pixel happens to sit under each sample — thin lines vanish
+    // and the result reads as noise. So we area-average on the way down
+    // (halving progressively, which is what makes the averaging clean), and
+    // only switch to nearest-neighbour when the source is already at or below
+    // the target size, or is an exact integer multiple of it — the cases
+    // where the source is itself pixel art and must stay crisp.
+    function _pixelDrawScaled(ctx, src, g) {
+      const exactMultiple =
+        g.sw % g.dw === 0 && g.sh % g.dh === 0 && g.sw / g.dw === g.sh / g.dh;
+      if (g.sw <= g.dw || g.sh <= g.dh || exactMultiple) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(src, g.sx, g.sy, g.sw, g.sh, g.dx, g.dy, g.dw, g.dh);
+        return;
+      }
+      // Progressive halving into a scratch canvas, then the final draw.
+      let cur = document.createElement('canvas');
+      cur.width = g.sw; cur.height = g.sh;
+      let cctx = cur.getContext('2d');
+      cctx.imageSmoothingEnabled = true;
+      cctx.imageSmoothingQuality = 'high';
+      cctx.drawImage(src, g.sx, g.sy, g.sw, g.sh, 0, 0, g.sw, g.sh);
+      let cw = g.sw, ch = g.sh;
+      while (cw > g.dw * 2 && ch > g.dh * 2) {
+        const nw = Math.max(g.dw, cw >> 1);
+        const nh = Math.max(g.dh, ch >> 1);
+        const next = document.createElement('canvas');
+        next.width = nw; next.height = nh;
+        const nctx = next.getContext('2d');
+        nctx.imageSmoothingEnabled = true;
+        nctx.imageSmoothingQuality = 'high';
+        nctx.drawImage(cur, 0, 0, cw, ch, 0, 0, nw, nh);
+        cur = next; cctx = nctx; cw = nw; ch = nh;
+      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(cur, 0, 0, cw, ch, g.dx, g.dy, g.dw, g.dh);
+    }
+
+    // Build the downsampled RGBA buffer at the target grid for one source
+    // (an <img> or a <canvas> — a decoded GIF frame is the latter).
+    function _pixelDownsampleImage(img, w, h, fit) {
+      const out = document.createElement('canvas');
+      out.width = w; out.height = h;
+      const ctx = out.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (!iw || !ih) return ctx.getImageData(0, 0, w, h);
+      _pixelDrawScaled(ctx, img, _pixelFitGeometry(iw, ih, w, h, fit));
       return ctx.getImageData(0, 0, w, h);
+    }
+
+    // Quantize a whole batch of downsampled frames against ONE palette.
+    // Per-frame palettes would make an imported animation shimmer — the same
+    // object drifting through slightly different colours every frame — and
+    // would burn through the 256-entry cap. Sampling every frame together and
+    // mapping them all to the result keeps an animation colour-stable.
+    function _pixelQuantizeFrames(dataList, nColours) {
+      const total = dataList.reduce((n, d) => n + d.length, 0);
+      const merged = new Uint8ClampedArray(total);
+      let o = 0;
+      for (const d of dataList) { merged.set(d, o); o += d.length; }
+      const palette = _pixelMedianCut(merged, nColours);
+      // Cache lookups — an animation revisits the same handful of colours
+      // thousands of times, and the nearest-palette scan is the hot loop.
+      const cache = new Map();
+      const framesIndices = dataList.map((data) => {
+        const indices = new Uint8Array(data.length >> 2);
+        for (let i = 0, p = 0; p < data.length; i++, p += 4) {
+          if (data[p + 3] < 128) { indices[i] = 0; continue; }
+          const key = (data[p] << 16) | (data[p + 1] << 8) | data[p + 2];
+          let idx = cache.get(key);
+          if (idx === undefined) {
+            idx = _pixelNearestPaletteIdx(data[p], data[p + 1], data[p + 2], palette);
+            cache.set(key, idx);
+          }
+          indices[i] = idx;
+        }
+        return indices;
+      });
+      return { palette, framesIndices };
+    }
+
+    function _pixelizeClampOpts(opts) {
+      return {
+        w: Math.max(4, Math.min(128, opts.width | 0 || 32)),
+        h: Math.max(4, Math.min(128, opts.height | 0 || 32)),
+        nColours: Math.max(2, Math.min(256, opts.colors | 0 || 16)),
+        fit: (['cover', 'contain', 'stretch'].includes(opts.fit) ? opts.fit : 'cover'),
+      };
     }
 
     // Image → pixelArt blob. Downscale, quantize palette, map pixels.
     function pixelizeImage(img, opts = {}) {
-      const w = Math.max(4, Math.min(128, opts.width | 0 || 32));
-      const h = Math.max(4, Math.min(128, opts.height | 0 || 32));
-      const nColours = Math.max(2, Math.min(64, opts.colors | 0 || 16));
-      const fit = (['cover', 'contain', 'stretch'].includes(opts.fit) ? opts.fit : 'cover');
+      const { w, h, nColours, fit } = _pixelizeClampOpts(opts);
       const data = _pixelDownsampleImage(img, w, h, fit).data;
-      const palette = _pixelMedianCut(data, nColours);
-      const indices = new Uint8Array(w * h);
-      for (let i = 0, p = 0; p < data.length; i++, p += 4) {
-        if (data[p + 3] < 128) { indices[i] = 0; continue; }
-        indices[i] = _pixelNearestPaletteIdx(data[p], data[p + 1], data[p + 2], palette);
-      }
+      const { palette, framesIndices } = _pixelQuantizeFrames([data], nColours);
       return {
         width: w, height: h, palette,
-        frames: [{ id: 'f1', pixels: encodePixelRLE(indices) }],
+        frames: [{ id: 'f1', pixels: encodePixelRLE(framesIndices[0]) }],
       };
+    }
+
+    // Scale a preview element up to fill its square box while keeping its own
+    // aspect. Without this a 32×32 canvas renders at a literal 32 CSS px in a
+    // 250px box — far too small to judge the conversion, and small enough that
+    // Cover / Fit / Stretch all looked identical.
+    function _pixelizeFitPreviewEl(el, aspectW, aspectH) {
+      const landscape = aspectW >= aspectH;
+      el.style.width = landscape ? '100%' : 'auto';
+      el.style.height = landscape ? 'auto' : '100%';
+      el.style.maxWidth = '100%';
+      el.style.maxHeight = '100%';
+      el.style.display = 'block';
     }
 
     // Render a pixelArt blob into a canvas suitable for the modal preview.
     function _pixelizeRenderPreview(targetEl, pa) {
       targetEl.innerHTML = '';
       const cv = renderPixelGridToCanvas(pa);
-      // The preview area is square; the canvas's natural aspect is w/h, so
-      // we constrain to fit within the box without distorting non-square
-      // grids.
-      cv.style.cssText = 'max-width:100%;max-height:100%;display:block;image-rendering:pixelated;image-rendering:crisp-edges';
+      cv.classList.add('pixelizeCrisp');
+      _pixelizeFitPreviewEl(cv, pa.width, pa.height);
+      targetEl.appendChild(cv);
+    }
+
+    // Render the source pane *framed the same way the conversion will frame
+    // it* — cropped for Cover, letterboxed for Fit, squashed for Stretch — at
+    // high resolution. Side by side with the pixelized pane it now reads as
+    // "before / after" of the same picture rather than two unrelated images.
+    function _pixelizeRenderSource(targetEl, img, opts) {
+      if (!targetEl || !img) return;
+      const { w, h, fit } = _pixelizeClampOpts(opts);
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      targetEl.innerHTML = '';
+      if (!iw || !ih) return;
+      // Canvas carries the target grid's aspect, at roughly the source's own
+      // resolution — so the framing draw stays close to 1:1 and CSS does the
+      // rest of the scaling into the box.
+      const scale = Math.max(1, Math.min(32, Math.round(Math.max(iw, ih) / Math.max(w, h)) || 1));
+      const cv = document.createElement('canvas');
+      cv.width = w * scale; cv.height = h * scale;
+      const ctx = cv.getContext('2d');
+      const g = _pixelFitGeometry(iw, ih, cv.width, cv.height, fit);
+      ctx.imageSmoothingEnabled = iw > cv.width || ih > cv.height;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, g.sx, g.sy, g.sw, g.sh, g.dx, g.dy, g.dw, g.dh);
+      // A small source is pixel art already — keep it crisp when CSS blows it
+      // up to fill the box. A photo gets the browser's smooth scaler.
+      if (Math.max(iw, ih) <= 160) cv.classList.add('pixelizeCrisp');
+      _pixelizeFitPreviewEl(cv, w, h);
       targetEl.appendChild(cv);
     }
 
     // Modal state: a live source image + the user's chosen options.
     let _pixelizeState = null;
 
+    // Pick sensible grid dims for a whole-sprite import. A source that is
+    // already within grid range (a pixel-art sprite sheet frame, a small GIF)
+    // imports at its own size — 1:1, no resampling at all. Anything larger
+    // scales down to a 64px long side, keeping the aspect.
+    function _pixelizeNaturalDims(img) {
+      const iw = (img && (img.naturalWidth || img.width)) | 0;
+      const ih = (img && (img.naturalHeight || img.height)) | 0;
+      if (!iw || !ih) return { width: 32, height: 32 };
+      const clamp = (v) => Math.max(4, Math.min(128, Math.round(v)));
+      if (iw <= 128 && ih <= 128) return { width: clamp(iw), height: clamp(ih) };
+      const ratio = 64 / Math.max(iw, ih);
+      return { width: clamp(iw * ratio), height: clamp(ih * ratio) };
+    }
+
+    // How many source frames the current Frames setting will actually use.
+    function _pixelizeFrameCount() {
+      if (!_pixelizeState) return 0;
+      const total = _pixelizeState.imgs.length;
+      const want = _pixelizeState.opts.frames | 0;
+      return Math.max(1, Math.min(total, want || total));
+    }
+
+    // Evenly sample the source list down to the requested frame count.
+    function _pixelizePickedFrames() {
+      if (!_pixelizeState) return [];
+      const all = _pixelizeState.imgs;
+      const n = _pixelizeFrameCount();
+      if (n >= all.length) return all.map((img, i) => ({ img, delayMs: _pixelizeState.delays[i] }));
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const at = Math.round(i * (all.length - 1) / (n - 1 || 1));
+        out.push({ img: all[at], delayMs: _pixelizeState.delays[at] });
+      }
+      return out;
+    }
+
     // Reflect _pixelizeState.opts.target in the UI: highlight the chosen
-    // target button, lock W / H to the editor's current dims when targeting
-    // a frame (so per-frame imports don't accidentally resize the whole
-    // sprite), and unlock them again for the Whole-sprite target. With
-    // a multi-image batch, target is forced to newFrame and the other
-    // target buttons are disabled.
+    // target button, and lock W / H to the editor's current dims when
+    // targeting a frame — every frame in a sprite shares one grid, so a
+    // per-frame import cannot change the size. "Whole sprite" rebuilds the
+    // grid from scratch and so leaves W / H editable; the lock hint says so,
+    // because a disabled field with no explanation just reads as broken.
     function _pixelizeSyncTargetUI() {
       if (!_pixelizeState) return;
-      const batch = _pixelizeState.imgs.length;
-      const isBatch = batch > 1;
-      if (isBatch) _pixelizeState.opts.target = 'newFrame';
+      const batch = _pixelizeState.imgs.length > 1;
+      // A batch can't overwrite a single "current" frame — but it can either
+      // append its frames or replace the whole sprite with them.
+      if (batch && _pixelizeState.opts.target === 'current') _pixelizeState.opts.target = 'all';
       const t = _pixelizeState.opts.target || 'current';
       document.querySelectorAll('#pixelizeTarget .pixelExportScaleBtn').forEach(b => {
         b.classList.toggle('active', b.dataset.target === t);
-        // In a batch, only newFrame makes sense — keep that one enabled.
-        b.disabled = isBatch && b.dataset.target !== 'newFrame';
+        b.disabled = batch && b.dataset.target === 'current';
       });
       const lockDims = (t === 'current' || t === 'newFrame');
       const wEl = $('pixelizeW'); const hEl = $('pixelizeH');
@@ -22272,11 +22730,28 @@
         _pixelizeState.opts.height = _pixelEdit.h;
         if (wEl) wEl.value = _pixelEdit.w;
         if (hEl) hEl.value = _pixelEdit.h;
+      } else if (!lockDims && !_pixelizeState.dimsTouched) {
+        // Switching to Whole sprite: offer dims derived from the source
+        // instead of leaving the editor's old grid behind. Once the user
+        // types their own W / H we stop second-guessing them.
+        const nat = _pixelizeNaturalDims(_pixelizeState.imgs[0]);
+        _pixelizeState.opts.width = nat.width;
+        _pixelizeState.opts.height = nat.height;
+        if (wEl) wEl.value = nat.width;
+        if (hEl) hEl.value = nat.height;
       }
+      const lockHint = $('pixelizeLockHint');
+      if (lockHint) {
+        lockHint.style.display = lockDims ? 'block' : 'none';
+        lockHint.textContent = _pixelEdit
+          ? `W / H locked to the sprite's ${_pixelEdit.w} × ${_pixelEdit.h} grid — every frame shares one grid. Choose “Whole sprite” to resize.`
+          : '';
+      }
+      const n = _pixelizeFrameCount();
       const addBtn = $('pixelizeAddBtn');
       if (addBtn) {
-        if (isBatch) {
-          addBtn.textContent = `Add ${batch} frames`;
+        if (n > 1) {
+          addBtn.textContent = t === 'all' ? `Replace sprite with ${n} frames` : `Add ${n} frames`;
         } else {
           addBtn.textContent = t === 'newFrame'
             ? 'Add as new frame'
@@ -22284,32 +22759,64 @@
         }
       }
       const srcLabel = $('pixelizeSourceLabel');
-      if (srcLabel) srcLabel.textContent = isBatch ? `Source · 1 / ${batch}` : 'Source';
+      if (srcLabel) srcLabel.textContent = n > 1 ? `Source · frame 1 / ${n}` : 'Source';
     }
 
-    function openPixelizeModal(imgOrImgs) {
-      const imgs = Array.isArray(imgOrImgs) ? imgOrImgs : [imgOrImgs];
-      if (!imgs.length) return;
-      // Defaults: grid dims and colour count both follow the editor's
-      // current state, so per-frame imports drop in coherently. A batch
-      // gets forced to the newFrame target inside _pixelizeSyncTargetUI.
+    // `sources` is either a single drawable, an array of drawables, or an
+    // array of { img, delayMs } (what a decoded GIF produces).
+    function openPixelizeModal(sources, meta = {}) {
+      const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
+      if (!list.length) return;
+      const imgs = list.map(s => (s && s.img) ? s.img : s);
+      const delays = list.map(s => (s && s.delayMs) ? s.delayMs : 0);
+      const animated = imgs.length > 1;
+      // Defaults: for a per-frame import the grid must match the editor, so
+      // start there. An animation is nearly always a whole-sprite import, so
+      // default that to the source's own dimensions.
       const defW = _pixelEdit ? _pixelEdit.w : 32;
       const defH = _pixelEdit ? _pixelEdit.h : 32;
-      const defColors = _pixelEdit
-        ? Math.max(2, Math.min(64, _pixelEdit.palette.length))
-        : 16;
+      const defColors = animated
+        ? 32
+        : (_pixelEdit ? Math.max(2, Math.min(256, _pixelEdit.palette.length)) : 16);
       _pixelizeState = {
-        imgs,
-        opts: { width: defW, height: defH, colors: defColors, fit: 'cover', target: 'current' },
+        imgs, delays, meta,
+        opts: {
+          width: defW, height: defH, colors: defColors, fit: 'cover',
+          target: animated ? 'all' : 'current',
+          frames: imgs.length,
+        },
+        dimsTouched: false,
         debounce: 0,
       };
       const modal = $('pixelizeModal');
       if (!modal) return;
       modal.style.display = 'flex';
       modal.setAttribute('aria-hidden', 'false');
-      // Show the first image as the source preview (representative for a batch).
-      const src = $('pixelizeSourceWrap');
-      if (src) { src.innerHTML = ''; src.appendChild(imgs[0].cloneNode()); }
+      const title = $('pixelizeTitle');
+      if (title) title.textContent = animated ? 'Import animation' : 'Pixelize image';
+      const intro = $('pixelizeIntro');
+      if (intro) {
+        intro.textContent = animated
+          ? 'Each source frame becomes a frame in the pixel editor, sharing one quantized palette. Tweak the controls — the preview updates live.'
+          : 'Downscale a picture to a pixel-art grid. Tweak the controls — the preview updates live.';
+      }
+      const framesRow = $('pixelizeFramesRow');
+      if (framesRow) framesRow.style.display = animated ? 'flex' : 'none';
+      const framesEl = $('pixelizeFrames');
+      if (framesEl) { framesEl.max = imgs.length; framesEl.value = imgs.length; }
+      const framesHint = $('pixelizeFramesHint');
+      if (framesHint) {
+        const src = meta.totalFrames && meta.totalFrames > imgs.length
+          ? `${meta.totalFrames} frames in the source, ${imgs.length} decoded`
+          : `${imgs.length} frames in the source`;
+        framesHint.textContent = `${src} — lower this to sample evenly and keep the design small.`;
+      }
+      const srcDims = $('pixelizeSourceDims');
+      if (srcDims) {
+        const iw = meta.naturalWidth || imgs[0].naturalWidth || imgs[0].width;
+        const ih = meta.naturalHeight || imgs[0].naturalHeight || imgs[0].height;
+        srcDims.textContent = `${iw} × ${ih}`;
+      }
       $('pixelizeW').value = _pixelizeState.opts.width;
       $('pixelizeH').value = _pixelizeState.opts.height;
       $('pixelizeColors').value = _pixelizeState.opts.colors;
@@ -22334,11 +22841,19 @@
       _pixelizeState.debounce = setTimeout(() => {
         if (!_pixelizeState) return;
         try {
-          // For a batch, the preview shows what the *first* image will
-          // become — every image gets pixelized with the same options.
-          const pa = pixelizeImage(_pixelizeState.imgs[0], _pixelizeState.opts);
+          // Both panes show the first frame, framed identically — the source
+          // as the conversion will crop / letterbox / squash it, and the
+          // result of actually converting it.
+          const img = _pixelizeState.imgs[0];
+          _pixelizeRenderSource($('pixelizeSourceWrap'), img, _pixelizeState.opts);
+          const pa = pixelizeImage(img, _pixelizeState.opts);
           _pixelizeState.previewPa = pa;
           _pixelizeRenderPreview($('pixelizeOutWrap'), pa);
+          const outDims = $('pixelizeOutDims');
+          if (outDims) {
+            const colours = Math.max(0, pa.palette.length - 1);
+            outDims.textContent = `${pa.width} × ${pa.height} · ${colours} colour${colours === 1 ? '' : 's'}`;
+          }
         } catch (e) {
           console.warn('pixelize preview:', e);
         }
@@ -22378,104 +22893,191 @@
       return { palette: merged, indices: remapped };
     }
 
+    // Derive a playback FPS from the source frame delays. GIFs carry a delay
+    // per frame but the editor plays at one rate, so we take the median —
+    // robust against the single long "pause" frame animations often end on.
+    function _pixelizeFpsFromDelays(delays) {
+      const usable = delays.filter(d => d > 0).sort((a, b) => a - b);
+      if (!usable.length) return null;
+      const median = usable[usable.length >> 1];
+      return Math.max(1, Math.min(60, Math.round(1000 / median)));
+    }
+
     // Apply the pixelized image(s) into the editor according to the chosen
-    // target. Per-frame targets pixelize at the editor's current grid so
-    // every frame stays dimensionally compatible. Multi-image batches are
-    // forced to the newFrame target and append each image as a new frame
-    // in pick-order, sharing one undo entry and one palette-merge pass.
+    // target. Per-frame targets pixelize at the editor's current grid so every
+    // frame stays dimensionally compatible; "Whole sprite" rebuilds the grid,
+    // the palette and the frame list outright. Either way every source frame
+    // is quantized against ONE shared palette so an imported animation stays
+    // colour-stable, and the whole import is a single undo entry.
     function pixelizeCommit() {
-      if (!_pixelizeState || !_pixelEdit) { closePixelizeModal(); return; }
-      const imgs = _pixelizeState.imgs;
-      const target = (imgs.length > 1) ? 'newFrame' : (_pixelizeState.opts.target || 'current');
-      if (target === 'all') {
-        // Whole-sprite replace — rebuild dims + palette + frames from scratch.
-        const pa = pixelizeImage(imgs[0], _pixelizeState.opts);
-        pixelSnapshot();
-        _pixelEdit.w = pa.width;
-        _pixelEdit.h = pa.height;
-        _pixelEdit.palette = pa.palette.slice();
-        _pixelEdit.frames = decodePixelArtFrames(pa, pa.width, pa.height);
+      if (!_pixelizeState) { closePixelizeModal(); return; }
+      // Standalone Pixel Art mode owns its editor for the life of the view,
+      // so if it has gone missing, rebuild it rather than dropping the
+      // import on the floor.
+      if (!_pixelEdit && state.templateMode === 'pixelart') ensureStandalonePixelEditor();
+      if (!_pixelEdit) {
+        closePixelizeModal();
+        toastError('The pixel editor is not open — reopen it and try the import again.');
+        return;
+      }
+      const picked = _pixelizePickedFrames();
+      if (!picked.length) { closePixelizeModal(); return; }
+      const multi = picked.length > 1;
+      const target = multi && _pixelizeState.opts.target === 'current'
+        ? 'all'
+        : (_pixelizeState.opts.target || 'current');
+      const wholeSprite = target === 'all';
+
+      // Per-frame targets are pinned to the editor's existing grid.
+      const opts = wholeSprite
+        ? _pixelizeState.opts
+        : { ..._pixelizeState.opts, width: _pixelEdit.w, height: _pixelEdit.h };
+      const { w, h, nColours, fit } = _pixelizeClampOpts(opts);
+      const dataList = picked.map(({ img }) => _pixelDownsampleImage(img, w, h, fit).data);
+      const { palette, framesIndices } = _pixelQuantizeFrames(dataList, nColours);
+
+      pixelSnapshot();
+
+      if (wholeSprite) {
+        _pixelEdit.w = w;
+        _pixelEdit.h = h;
+        _pixelEdit.palette = palette.slice();
+        _pixelEdit.frames = framesIndices.map((indices, i) => ({
+          id: _pixelNewFrameId(),
+          durationMs: picked[i].delayMs || 120,
+          indices,
+        }));
         _pixelEdit.currentFrame = 0;
         _pixelEdit.indices = _pixelEdit.frames[0].indices;
         _pixelEdit.current = Math.min(1, _pixelEdit.palette.length - 1);
-        const dims = $('pixelEditorDims');
-        if (dims) dims.textContent = `${pa.width} × ${pa.height} px`;
-        renderPixelPalette();
-        renderPixelGrid();
-        renderPixelTimeline();
-        pixelCommitIfStandalone();
-        closePixelizeModal();
-        toastSuccess('Image pixelized.');
-        return;
-      }
-      pixelSnapshot();
-      const opts = { ..._pixelizeState.opts, width: _pixelEdit.w, height: _pixelEdit.h };
-      let workingPalette = _pixelEdit.palette;
-      const newFrameIndicesList = [];
-      for (const img of imgs) {
-        const pa = pixelizeImage(img, opts);
-        const decoded = decodePixelArtFrames(pa, pa.width, pa.height)[0];
-        const merged = _pixelMergePaletteAndRemap(workingPalette, pa.palette, decoded.indices);
-        workingPalette = merged.palette;
-        newFrameIndicesList.push(merged.indices);
-      }
-      _pixelEdit.palette = workingPalette;
-      if (target === 'newFrame') {
-        let at = _pixelEdit.currentFrame + 1;
-        for (const indices of newFrameIndicesList) {
-          _pixelEdit.frames.splice(at, 0, {
-            id: _pixelNewFrameId(),
-            durationMs: 120,
-            indices,
-          });
-          at++;
+        const fps = multi ? _pixelizeFpsFromDelays(picked.map(p => p.delayMs)) : null;
+        if (fps) {
+          _pixelEdit.fps = fps;
+          const fpsEl = $('pixelFpsInput');
+          if (fpsEl) fpsEl.value = fps;
         }
-        _pixelEdit.currentFrame = at - 1; // land on the last inserted frame
       } else {
-        // 'current' (single image only): overwrite the active frame.
-        _pixelEdit.frames[_pixelEdit.currentFrame].indices = newFrameIndicesList[0];
+        // Merge the batch's shared palette into the editor's once, then remap
+        // every frame through it — existing frames keep their indices.
+        let workingPalette = _pixelEdit.palette;
+        const remapped = [];
+        for (const indices of framesIndices) {
+          const merged = _pixelMergePaletteAndRemap(workingPalette, palette, indices);
+          workingPalette = merged.palette;
+          remapped.push(merged.indices);
+        }
+        _pixelEdit.palette = workingPalette;
+        if (target === 'newFrame') {
+          let at = _pixelEdit.currentFrame + 1;
+          remapped.forEach((indices, i) => {
+            _pixelEdit.frames.splice(at, 0, {
+              id: _pixelNewFrameId(),
+              durationMs: picked[i].delayMs || 120,
+              indices,
+            });
+            at++;
+          });
+          _pixelEdit.currentFrame = at - 1; // land on the last inserted frame
+        } else {
+          _pixelEdit.frames[_pixelEdit.currentFrame].indices = remapped[0];
+        }
+        _pixelEdit.indices = _pixelEdit.frames[_pixelEdit.currentFrame].indices;
       }
-      _pixelEdit.indices = _pixelEdit.frames[_pixelEdit.currentFrame].indices;
+
       renderPixelPalette();
       renderPixelGrid();
       renderPixelTimeline();
       pixelCommitIfStandalone();
+      if (wholeSprite) { pixelSyncDims(); pixelFitZoom(); }
       closePixelizeModal();
-      const n = imgs.length;
+      const n = picked.length;
       toastSuccess(
-        n > 1 ? `Added ${n} pixelized frames.` :
-        target === 'newFrame' ? 'Added pixelized frame.' :
-        'Pixelized into current frame.'
+        n > 1
+          ? (wholeSprite ? `Imported ${n} frames.` : `Added ${n} pixelized frames.`)
+          : wholeSprite ? 'Image pixelized.'
+          : target === 'newFrame' ? 'Added pixelized frame.'
+          : 'Pixelized into current frame.'
       );
     }
 
-    function pixelImportFromImage() {
-      $('pixelImportImage')?.click();
+    function _pixelReadFileAsImage(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => resolve({ ok: true, sources: [{ img, delayMs: 0 }] });
+          img.onerror = () => resolve({ ok: false, name: file.name });
+          img.src = reader.result;
+        };
+        reader.onerror = () => resolve({ ok: false, name: file.name });
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function _pixelLooksLikeGif(file) {
+      return file.type === 'image/gif' || /\.gif$/i.test(file.name || '');
+    }
+
+    // A GIF goes through the inline decoder so every frame is available; a
+    // browser <img> would only ever hand us the first one.
+    function _pixelReadGifFile(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          // Decoding is synchronous and can hold the main thread for a second
+          // or two on a big animation — say so first, and yield a frame so the
+          // message actually paints before we block.
+          const busy = file.size > 200 * 1024 ? toast('Decoding GIF frames…', { duration: 60000 }) : null;
+          if (busy) await new Promise(r => setTimeout(r, 0));
+          const clearBusy = () => { try { busy?.remove(); } catch (_) {} };
+          try {
+            const gif = decodeGifFrames(reader.result);
+            clearBusy();
+            resolve({
+              ok: true,
+              sources: gif.frames.map(f => ({ img: f.canvas, delayMs: f.delayMs })),
+              meta: {
+                animated: gif.frames.length > 1,
+                naturalWidth: gif.naturalWidth,
+                naturalHeight: gif.naturalHeight,
+                totalFrames: gif.totalFrames,
+                sampled: gif.sampled,
+                scaled: gif.scaled,
+                name: file.name,
+              },
+            });
+          } catch (err) {
+            clearBusy();
+            console.warn('gif decode:', err);
+            // A malformed or non-animated GIF still renders fine as an <img>.
+            _pixelReadFileAsImage(file).then(resolve);
+          }
+        };
+        reader.onerror = () => resolve({ ok: false, name: file.name });
+        reader.readAsArrayBuffer(file);
+      });
     }
 
     function handlePixelImageFile(e) {
       const files = Array.from(e.target.files || []);
       e.target.value = '';
       if (!files.length) return;
-      const promises = files.map(file => new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const img = new Image();
-          img.onload = () => resolve({ ok: true, img, name: file.name });
-          img.onerror = () => resolve({ ok: false });
-          img.src = reader.result;
-        };
-        reader.onerror = () => resolve({ ok: false });
-        reader.readAsDataURL(file);
-      }));
-      Promise.all(promises).then(results => {
-        const imgs = results.filter(r => r.ok).map(r => r.img);
-        if (!imgs.length) { toastError('Could not read those images.'); return; }
-        if (imgs.length < files.length) {
-          toastError(`${files.length - imgs.length} of ${files.length} files could not be read.`);
-        }
-        openPixelizeModal(imgs);
-      });
+      Promise.all(files.map(f => (_pixelLooksLikeGif(f) ? _pixelReadGifFile(f) : _pixelReadFileAsImage(f))))
+        .then(results => {
+          const ok = results.filter(r => r.ok);
+          const sources = ok.flatMap(r => r.sources);
+          if (!sources.length) { toastError('Could not read those images.'); return; }
+          if (ok.length < files.length) {
+            toastError(`${files.length - ok.length} of ${files.length} files could not be read.`);
+          }
+          // Only a single GIF carries frame metadata into the modal; a mixed
+          // multi-file pick is just an ordered batch of stills.
+          const meta = (files.length === 1 && ok[0] && ok[0].meta) ? ok[0].meta : {};
+          if (meta.sampled) {
+            toast(`That GIF has ${meta.totalFrames} frames — decoded ${sources.length} of them, evenly sampled.`);
+          }
+          openPixelizeModal(sources, meta);
+        });
     }
 
     // Sanitize an arbitrary `pixelArt` blob (from file or community payload)
@@ -22485,16 +23087,23 @@
       const w = Math.max(4, Math.min(128, pa.width | 0));
       const h = Math.max(4, Math.min(128, pa.height | 0));
       if (!w || !h) return null;
+      // 256 is the model's cap (one byte per index) — truncating lower would
+      // silently blank out every cell pointing past the cut.
       const palette = (Array.isArray(pa.palette) && pa.palette.length)
-        ? pa.palette.slice(0, 64).map(c => (typeof c === 'string' ? c : '#00000000'))
+        ? pa.palette.slice(0, 256).map(c => (typeof c === 'string' ? c : '#00000000'))
         : DEFAULT_PIXEL_PALETTE.slice();
       // decode then re-encode every frame so we own the buffers and catch
-      // corrupt RLE runs. Cap at 32 frames as a defensive ceiling.
-      const srcFrames = (Array.isArray(pa.frames) && pa.frames.length) ? pa.frames.slice(0, 32) : [{ pixels: [] }];
-      const frames = srcFrames.map((f, i) => ({
-        id: f.id || ('f' + (i + 1)),
-        pixels: encodePixelRLE(decodePixelRLE(f, w, h)),
-      }));
+      // corrupt RLE runs. Cap at 64 frames as a defensive ceiling.
+      const srcFrames = (Array.isArray(pa.frames) && pa.frames.length) ? pa.frames.slice(0, 64) : [{ pixels: [] }];
+      const frames = srcFrames.map((f, i) => {
+        const out = {
+          id: f.id || ('f' + (i + 1)),
+          pixels: encodePixelRLE(decodePixelRLE(f, w, h)),
+        };
+        const dur = f.durationMs | 0;
+        if (dur >= 20 && dur !== 120) out.durationMs = Math.min(60000, dur);
+        return out;
+      });
       const out = { width: w, height: h, palette, frames };
       if (pa.fps) out.fps = Math.max(1, Math.min(60, pa.fps | 0));
       if (pa.loop === false) out.loop = false;
@@ -22603,6 +23212,10 @@
         fps: _pixelEdit.fps,
         loop: _pixelEdit.loop,
       };
+      // Standalone pixel editing never goes through render(), so nothing else
+      // writes the autosave — without this a whole sprite (or a freshly
+      // imported animation) is gone on refresh.
+      persistAutosaveDebounced();
     }
 
     // Commit whatever pixel editor is open (layer or standalone) and close it.
@@ -22663,15 +23276,7 @@
       renderPixelGrid();
       renderPixelTimeline();
       updateUndoRedoUI();
-      requestAnimationFrame(() => {
-        if (!_pixelEdit || !_pixelEdit.standalone) return;
-        const wrap = $('pixelEditorCanvasWrap');
-        const aw = (wrap?.clientWidth || 640) - 28, ah = (wrap?.clientHeight || 420) - 28;
-        let z = PIXEL_ZOOMS[0];
-        for (const c of PIXEL_ZOOMS) { if (c * w <= aw && c * h <= ah) z = c; }
-        _pixelEdit.zoom = z;
-        renderPixelGrid();
-      });
+      pixelFitZoom();
     }
 
     // ---- Vector shape layers (Phase A: primitives + solid fill) ----
@@ -38328,6 +38933,14 @@
     // and Disc Design are the Designer tab's two layouts; Cover/Disc are the
     // Template tab's. applyLayout() handles any appMode crossing.
     function applyLayout(layout) {
+      // Re-selecting the layout that is already active must be a true no-op.
+      // Everything below assumes a real change: pixelEditTearDown() commits
+      // and destroys any open pixel editor, and only the render() at the end
+      // rebuilds a standalone one. The equal-layout early return used to sit
+      // *after* the teardown, so clicking "Pixel art" while already in Pixel
+      // art left the grid on screen but with no editor behind it — painting,
+      // the palette, and image import all silently did nothing.
+      if (layout !== 'discdesign' && state.appMode !== 'designer' && state.templateMode === layout) return;
       // If a deck slide is open in the editor, save it back before any
       // layout change carries us out of the slide editor.
       persistEditingDeckSlide();
@@ -38347,7 +38960,7 @@
         state._prevTemplateMode = layout;
         switchAppMode('template');
       } else {
-        if (state.templateMode === layout) return;
+        // (the equal-layout no-op is handled at the top of this function)
         pushHistory(`switch to ${layout}`);
         state.templateMode = layout;
       }
@@ -38736,8 +39349,8 @@
         pixelImportFromFile();
       });
       $('pixelImportFile')?.addEventListener('change', handlePixelImportFile);
-      // Pixel-editor toolbar "From image…" — opens the picker, then the
-      // pixelize modal. Replaces the editor's current grid + palette + frames.
+      // Pixel-editor toolbar "From image / GIF…" — opens the picker, then the
+      // pixelize modal. Animated GIFs are decoded frame by frame.
       $('pixelEditorImageBtn')?.addEventListener('click', () => {
         $('pixelEditorImageFile')?.click();
       });
@@ -38747,11 +39360,20 @@
         if (!_pixelizeState) return;
         const v = Math.max(min, Math.min(max, Number(e.target.value) | 0 || min));
         _pixelizeState.opts[key] = v;
+        // Once W / H are typed by hand, stop re-deriving them from the source
+        // when the target changes.
+        if (key === 'width' || key === 'height') _pixelizeState.dimsTouched = true;
         pixelizeUpdatePreview();
       };
       $('pixelizeW')?.addEventListener('input', _onPixelizeOpt('width', 128, 4));
       $('pixelizeH')?.addEventListener('input', _onPixelizeOpt('height', 128, 4));
-      $('pixelizeColors')?.addEventListener('input', _onPixelizeOpt('colors', 64, 2));
+      $('pixelizeColors')?.addEventListener('input', _onPixelizeOpt('colors', 256, 2));
+      $('pixelizeFrames')?.addEventListener('input', (e) => {
+        if (!_pixelizeState) return;
+        const total = _pixelizeState.imgs.length;
+        _pixelizeState.opts.frames = Math.max(1, Math.min(total, Number(e.target.value) | 0 || total));
+        _pixelizeSyncTargetUI();
+      });
       $('pixelizeFitMode')?.addEventListener('click', (e) => {
         const btn = e.target.closest('.pixelExportScaleBtn');
         if (!btn || !_pixelizeState) return;

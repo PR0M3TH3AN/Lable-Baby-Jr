@@ -119,12 +119,34 @@ All four phases shipped.
   animated GIF export — palette-indexed, no vendored dependency.
   Multi-frame previews animate everywhere they're rendered (publish
   modal, community browser, feed cards, profile pages).
-- **Phase D — conversion: shipped.** "From image…" button in the
-  pixel editor toolbar: pick any image file → live side-by-side
+- **Phase D — conversion: shipped.** "From image / GIF…" button in
+  the pixel editor toolbar: pick any image file → live side-by-side
   preview as you tune W / H / Colors / fit mode (Cover / Fit /
-  Stretch) → median-cut palette quantization → nearest-neighbour
+  Stretch) → median-cut palette quantization → area-averaged
   downscale → applies into the editor as a drop-in replacement
   (one undo restores the prior state).
+- **Phase D2 — animation import: shipped.** An **inline GIF89a
+  decoder** — the mirror of the encoder, no vendored dependency —
+  turns an animated GIF into one editor frame per GIF frame. A
+  browser `<img>` only ever exposes frame 0 to canvas, so decoding
+  is the only way to get at the rest. It handles LZW, interlacing,
+  local colour tables, transparency, and all three disposal methods
+  (frames composite over their predecessor, so partial
+  "changed-rectangle" frames render correctly).
+  - **One shared palette** across every frame, quantized from all
+    frames together — per-frame palettes made an animation shimmer
+    and burned through the 256-entry cap.
+  - **Playback FPS from the source**, taken as the median frame delay
+    (robust against the long pause frame animations often end on);
+    per-frame `durationMs` is preserved in the payload.
+  - **Frames** control evenly samples a long animation down, and the
+    decoder bounds both frame count and working resolution so a big
+    GIF can't exhaust memory — whatever it drops is reported, never
+    silent.
+  - A GIF already at grid size with a limited palette imports
+    **pixel-exact**: the downscaler switches to nearest-neighbour at
+    1:1 or integer ratios, and the quantizer keeps the source's exact
+    colours when there are fewer than requested.
 - **Undo / redo integration.** The pixel editor's local undo /
   redo is driven by the top-level Undo / Redo buttons while the
   editor is open, and falls back to the global design history
@@ -521,5 +543,7 @@ a sprite sheet.
 - [ ] GIF export and sprite-sheet export both produce correct files.
 
 ### Phase D
-- [ ] An imported PNG/JPEG converts to an editable pixel grid.
+- [x] An imported PNG/JPEG converts to an editable pixel grid.
+- [x] An animated GIF imports as one editor frame per GIF frame,
+      sharing one palette, at the source's own playback rate.
 - [ ] Selection/move and the advanced brushes work.

@@ -31,9 +31,24 @@ Palette-indexed grid editor for sprite work + simple animation.
 - **Browse community** — pulls a published pixel-art design from
   Nostr as a layer.
 - **Import from file** — JSON design export.
-- **From image…** — pick any image, then the live side-by-side
+- **From image / GIF…** — pick any image, then the live side-by-side
   preview tunes target W/H, colour count, and fit mode (Cover /
-  Fit / Stretch) before applying. Uses median-cut quantization.
+  Fit / Stretch) before applying. Both panes are framed the same way,
+  so the fit modes are directly comparable. Uses median-cut
+  quantization — or the source's exact colours when it already has
+  fewer than the requested count.
+- **Animated GIF** — an inline GIF89a decoder (the mirror of the
+  exporter) turns every frame into a frame in the editor. The whole
+  animation shares one quantized palette so colours don't shimmer
+  between frames, playback FPS is derived from the GIF's own frame
+  delays, and **Frames** samples a long animation down evenly. A GIF
+  already at grid size and palette-limited imports pixel-exact.
+- Selecting several image files at once imports them as consecutive
+  frames, in pick order.
+- **Apply to** decides where the import lands. Current frame / New
+  frame keep the existing grid, so W/H are locked to it — every frame
+  in a sprite shares one grid. **Whole sprite** rebuilds the grid and
+  is the only target that can resize.
 
 ## Export
 
