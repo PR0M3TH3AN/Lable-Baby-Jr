@@ -5636,6 +5636,17 @@
         <input id="relayList" type="text" placeholder="wss://nos.lol, wss://nostr.mom, wss://relay.nostr.net, wss://nostr.oxtr.dev, wss://relay.damus.io, wss://relay.primal.net" style="margin-top:4px" />
         <p class="hint">Separate multiple relays with commas. Changing relays clears the template cache.</p>
       </details>
+      <details id="archiveRebroadcastDetails" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+        <summary style="font-weight:700;font-size:.82rem;cursor:pointer;color:var(--muted)">Archive &amp; rebroadcast</summary>
+        <p class="hint" style="margin:8px 0 6px">Reads every Artstr design still reachable — across your relays <em>and</em> the old defaults, including ones currently marked dead — saves them to a JSON file, then re-publishes them to your current relays so nothing is lost when a relay goes dark.</p>
+        <p class="hint" style="margin:0 0 6px">Sign in first to include your own <strong>private and premium</strong> designs; those are only findable by their author. Retracted designs are never re-published, and only the newest version of each design is sent.</p>
+        <p class="hint" style="margin:0 0 8px;padding:8px 10px;border:1px solid rgba(251,191,36,.4);background:rgba(251,191,36,.1);color:#92400e;border-radius:6px;font-size:.76rem">This publishes to external relays and cannot be undone. Your private designs stay encrypted — relays can't read them — but they will exist on the new relays, which can see your pubkey, timestamps and identifiers.</p>
+        <div class="buttonRow" style="margin:0">
+          <button type="button" id="archiveRebroadcastBtn" class="primary">Archive &amp; rebroadcast</button>
+        </div>
+        <p class="hint" id="archiveRebroadcastStatus" style="margin:8px 0 0;min-height:1.2em;color:var(--muted)"></p>
+        <div id="archiveRebroadcastReport" style="margin:8px 0 0;font-size:.74rem"></div>
+      </details>
       <details id="softModDetails" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px;display:none">
         <summary style="font-weight:700;font-size:.82rem;cursor:pointer;color:var(--muted)">Web-of-trust soft moderation</summary>
         <label style="display:flex;align-items:flex-start;gap:8px;margin-top:8px;font-size:.78rem;cursor:pointer">
@@ -15350,8 +15361,261 @@
       return { accepted, results };
     }
 
-    async function queryRelays(relays, filters, { timeoutMs = 3500, onEvent, onRelayDone } = {}) {
-      const relayList = getActiveRelays(relays, { includeCoolingDown: false });
+    // Push many already-signed events to each relay over ONE socket.
+    // publishToRelays opens a fresh connection per event, which is fine for a
+    // single publish but would mean hundreds of connections for an archive
+    // sweep — every relay would rate-limit or ban partway through.
+    //
+    // Every event is awaited individually and accounted exactly once, as
+    // accepted / rejected / unanswered. An earlier version fired everything
+    // off and decided it was finished once acknowledgements went quiet; with
+    // multi-megabyte designs the relay always lagged behind the sends, so the
+    // socket kept closing on the unsent tail and the totals never matched what
+    // went out. A bounded in-flight window is slower but self-pacing, and it
+    // cannot silently drop the end of the archive.
+    function bulkPublishToRelays(events, relays, {
+      onProgress, perEventTimeoutMs = 20000, maxInFlight = 4, openTimeoutMs = 8000,
+    } = {}) {
+      const safeProgress = (info) => { try { onProgress && onProgress(info); } catch {} };
+      return Promise.all(relays.map((relay) => (async () => {
+        const stats = { relay, accepted: 0, rejected: 0, unanswered: 0, error: '' };
+        if (!events.length) return stats;
+        let ws;
+        try {
+          ws = new WebSocket(relay);
+        } catch {
+          stats.error = 'Could not open websocket';
+          stats.unanswered = events.length;
+          return stats;
+        }
+
+        const waiters = new Map();   // event id -> { resolve, timer }
+        let closed = false;
+        const settleAll = (result) => {
+          for (const w of waiters.values()) { clearTimeout(w.timer); w.resolve(result); }
+          waiters.clear();
+        };
+
+        ws.addEventListener('message', (msg) => {
+          let data;
+          try { data = JSON.parse(msg.data); } catch { return; }
+          if (data[0] !== 'OK') return;
+          const waiter = waiters.get(data[1]);
+          if (!waiter) return;
+          waiters.delete(data[1]);
+          clearTimeout(waiter.timer);
+          waiter.resolve({ ok: !!data[2], note: String(data[3] || '') });
+        });
+        ws.addEventListener('close', () => { closed = true; settleAll({ ok: false, closed: true }); });
+
+        const opened = await new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(false), openTimeoutMs);
+          ws.addEventListener('open', () => { clearTimeout(timer); resolve(true); });
+          ws.addEventListener('error', () => { clearTimeout(timer); resolve(false); });
+          ws.addEventListener('close', () => { clearTimeout(timer); resolve(false); });
+        });
+        if (!opened) {
+          stats.error = 'Could not connect';
+          stats.unanswered = events.length;
+          try { ws.close(); } catch {}
+          return stats;
+        }
+
+        const sendOne = (event) => new Promise((resolve) => {
+          if (closed) return resolve({ ok: false, closed: true });
+          const timer = setTimeout(() => {
+            waiters.delete(event.id);
+            resolve({ ok: false, timedOut: true });
+          }, perEventTimeoutMs);
+          waiters.set(event.id, { resolve, timer });
+          try {
+            ws.send(JSON.stringify(['EVENT', event]));
+          } catch {
+            clearTimeout(timer);
+            waiters.delete(event.id);
+            resolve({ ok: false, note: 'Could not send event' });
+          }
+        });
+
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < events.length && !closed) {
+            const event = events[cursor++];
+            let res = await sendOne(event);
+            // A rate-limit is the relay asking us to slow down, not a
+            // rejection — pause and give it one more go.
+            if (!res.ok && /rate.?limit|too fast|slow down/i.test(res.note || '')) {
+              await new Promise((r) => setTimeout(r, 1500));
+              res = await sendOne(event);
+            }
+            if (res.ok) stats.accepted++;
+            else if (res.timedOut || res.closed) stats.unanswered++;
+            else { stats.rejected++; if (!stats.error) stats.error = res.note || 'Relay rejected event'; }
+            safeProgress({ relay, ok: res.ok });
+          }
+        };
+        const lanes = Math.max(1, Math.min(maxInFlight, events.length));
+        await Promise.all(Array.from({ length: lanes }, worker));
+        // Anything still unsent because the relay dropped us mid-run.
+        stats.unanswered += Math.max(0, events.length - cursor);
+        try { ws.close(); } catch {}
+        return stats;
+      })()));
+    }
+
+    // ---- Archive & rebroadcast ----------------------------------------
+    // Relay migration tool. Sweeps every Artstr event still readable, saves a
+    // signed-event bundle to disk, and re-publishes it to the configured
+    // relays so designs survive a relay going dark.
+    //
+    // Signed events are self-authenticating: relays verify the signature, so
+    // rebroadcasting someone else's design cannot forge or alter it — this is
+    // ordinary Nostr replication, not impersonation.
+
+    // Read as widely as possible: current relays plus the old defaults, and
+    // deliberately including relays that are cooling down. A relay that is
+    // unreachable from one network may answer from another, and a dying relay
+    // is exactly the one holding events worth rescuing.
+    function archiveSourceRelays() {
+      return [...new Set([
+        ...splitRelayList(state.community?.relays || ''),
+        ...DEFAULT_NOSTR_RELAYS,
+        ...LEGACY_DEFAULT_NOSTR_RELAYS,
+      ].map(normalizeRelayHealthRelay).filter(Boolean))];
+    }
+
+    // Collapse to what should actually be re-published:
+    //   - honour deletions, so a design the author retracted is never
+    //     resurrected onto a fresh relay (a kind:5 only counts from the
+    //     author of the event it targets);
+    //   - keep only the newest version of each addressable design, since
+    //     kind:30078 is replaceable and older revisions are already
+    //     superseded everywhere.
+    function selectEventsForRebroadcast(events, deletions) {
+      const deletedIds = new Set();
+      const deletedAddrs = new Set();
+      for (const del of deletions) {
+        for (const tag of del.tags || []) {
+          if (tag[0] === 'e' && tag[1]) deletedIds.add(`${del.pubkey}:${tag[1]}`);
+          if (tag[0] === 'a' && tag[1]) deletedAddrs.add(`${del.pubkey}:${tag[1]}`);
+        }
+      }
+      const newestByAddr = new Map();
+      for (const ev of events) {
+        if (deletedIds.has(`${ev.pubkey}:${ev.id}`)) continue;
+        const dTag = (ev.tags || []).find((t) => t[0] === 'd' && t[1] != null)?.[1] || '';
+        const addr = `${ev.kind}:${ev.pubkey}:${dTag}`;
+        if (deletedAddrs.has(`${ev.pubkey}:${addr}`)) continue;
+        const prev = newestByAddr.get(addr);
+        if (!prev || (ev.created_at || 0) > (prev.created_at || 0)) newestByAddr.set(addr, ev);
+      }
+      return [...newestByAddr.values()].sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+    }
+
+    // The signer's own pubkey, asked for directly rather than trusted from
+    // state. state.community.myPubkey is only filled in by an explicit
+    // sign-in pass, so a connected extension is not enough — and if we get
+    // this wrong the authored sweep silently does not run and every private
+    // and premium design is left behind, which is the whole point of the tool.
+    async function archiveIdentityPubkey() {
+      const known = state.community?.myPubkey || '';
+      if (/^[0-9a-f]{64}$/i.test(known)) return known.toLowerCase();
+      try {
+        const pk = await window.nostr?.getPublicKey();
+        if (/^[0-9a-f]{64}$/i.test(pk || '')) return pk.toLowerCase();
+      } catch {
+        // Extension missing or permission declined — carry on with the
+        // public sweep only.
+      }
+      return '';
+    }
+
+    async function archiveAndRebroadcast({ onStatus } = {}) {
+      const say = (text) => { try { onStatus && onStatus(text); } catch {} };
+      const sources = archiveSourceRelays();
+      const me = await archiveIdentityPubkey();
+
+      say(`Reading from ${sources.length} relays…`);
+      const collected = new Map();
+      const absorb = (list) => { for (const ev of list || []) if (ev?.id) collected.set(ev.id, ev); };
+
+      // Public sweep finds every tagged design from every author. The authored
+      // sweep is the only way to reach the signer's own private and premium
+      // designs — those carry randomised d-tags and no public tag, so nothing
+      // but an authors filter will surface them.
+      const filters = [{ kinds: [30078], '#t': ['casewrap'], limit: 500 }];
+      if (me) filters.push({ kinds: [30078], authors: [me], limit: 500 });
+      absorb(await queryRelays(sources, filters, { timeoutMs: 9000, includeCoolingDown: true }));
+
+      say(`Found ${collected.size} designs. Checking for retracted ones…`);
+      const events = [...collected.values()];
+      // Scope the deletion lookup to the authors we actually collected. A
+      // blanket `#k: 30078` filter returns every kind:30078 retraction on the
+      // network — hundreds of unrelated events from strangers, which we would
+      // then have rebroadcast to every relay. A deletion only counts from the
+      // author of the event it targets anyway.
+      const authors = [...new Set(events.map((e) => e.pubkey).concat(me ? [me] : []).filter(Boolean))];
+      const AUTHOR_BATCH = 50;
+      const delFilters = [];
+      for (let i = 0; i < authors.length; i += AUTHOR_BATCH) {
+        delFilters.push({ kinds: [5], authors: authors.slice(i, i + AUTHOR_BATCH), limit: 500 });
+      }
+      const allDeletions = delFilters.length
+        ? await queryRelays(sources, delFilters, { timeoutMs: 7000, includeCoolingDown: true })
+        : [];
+      // Keep only retractions that actually point at something in this
+      // archive, so we relay the record of "this was withdrawn" and nothing
+      // else the author happens to have deleted elsewhere.
+      const ourIds = new Set(events.map((e) => e.id));
+      const ourAddrs = new Set(events.map((e) => {
+        const dTag = (e.tags || []).find((t) => t[0] === 'd' && t[1] != null)?.[1] || '';
+        return `${e.kind}:${e.pubkey}:${dTag}`;
+      }));
+      const deletions = allDeletions.filter((del) => (del.tags || []).some((t) =>
+        (t[0] === 'e' && ourIds.has(t[1])) || (t[0] === 'a' && ourAddrs.has(t[1]))
+      ));
+
+      const toSend = selectEventsForRebroadcast(events, deletions);
+      const mine = toSend.filter((e) => me && e.pubkey === me).length;
+      const skipped = events.length - toSend.length;
+
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      triggerDownload({
+        kind: 'artstr-archive',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        sourceRelays: sources,
+        myPubkey: me || null,
+        counts: { found: events.length, rebroadcast: toSend.length, skipped, mine, deletions: deletions.length },
+        events: toSend,
+        deletions,
+      }, `artstr-archive-${stamp}.json`);
+
+      const targets = getActiveRelays(splitRelayList(state.community?.relays || ''), { includeCoolingDown: true });
+      if (!toSend.length) return { found: events.length, sent: 0, results: [], skipped, mine, targets };
+
+      say(`Archive saved. Rebroadcasting ${toSend.length} designs to ${targets.length} relays…`);
+      let done = 0;
+      const total = toSend.length * targets.length;
+      // Deletions go out first so a relay learns a design was retracted
+      // before anything can put an older copy of it back.
+      if (deletions.length) {
+        await bulkPublishToRelays(deletions, targets, { paceMs: 60 });
+      }
+      const results = await bulkPublishToRelays(toSend, targets, {
+        paceMs: 60,
+        onProgress: (info) => {
+          if (info && info.ok !== undefined) {
+            done++;
+            if (done % 25 === 0) say(`Rebroadcasting… ${done}/${total} confirmations`);
+          }
+        },
+      });
+      return { found: events.length, sent: toSend.length, results, skipped, mine, targets, deletions: deletions.length };
+    }
+
+    async function queryRelays(relays, filters, { timeoutMs = 3500, onEvent, onRelayDone, includeCoolingDown = false } = {}) {
+      const relayList = getActiveRelays(relays, { includeCoolingDown });
       const events = new Map();
       const safeCallback = (fn, ...args) => {
         if (typeof fn !== 'function') return;
@@ -39460,6 +39724,39 @@
         addPixelArtLayer();
       });
       watchNostrModalClose();
+      $('archiveRebroadcastBtn')?.addEventListener('click', async () => {
+        const btn = $('archiveRebroadcastBtn');
+        const statusEl = $('archiveRebroadcastStatus');
+        const reportEl = $('archiveRebroadcastReport');
+        const say = (text) => { if (statusEl) statusEl.textContent = text; };
+        if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+        if (reportEl) reportEl.innerHTML = '';
+        try {
+          const res = await archiveAndRebroadcast({ onStatus: say });
+          const ok = (res.results || []).reduce((n, r) => n + (r.accepted || 0), 0);
+          say(`Done — archived ${res.found} designs, rebroadcast ${res.sent}.`);
+          if (reportEl) {
+            const rows = (res.results || []).map((r) => {
+              const detail = r.error
+                ? `<span style="color:var(--warn)">${escapeHtml(r.error)}</span>`
+                : `${r.accepted} accepted${r.rejected ? `, ${r.rejected} rejected` : ''}${r.unanswered ? `, ${r.unanswered} no reply` : ''}`;
+              return `<div style="display:flex;gap:8px;justify-content:space-between"><span>${escapeHtml(r.relay)}</span><span>${detail}</span></div>`;
+            }).join('');
+            reportEl.innerHTML =
+              `<div style="margin:0 0 4px"><strong>${res.found}</strong> found · <strong>${res.sent}</strong> sent`
+              + `${res.mine ? ` · <strong>${res.mine}</strong> yours` : ''}`
+              + `${res.skipped ? ` · ${res.skipped} skipped (retracted or superseded)` : ''}`
+              + `${res.deletions ? ` · ${res.deletions} deletions relayed` : ''}</div>${rows}`;
+          }
+          toastSuccess(`Archived ${res.found} designs · ${ok} relay acceptances.`);
+        } catch (err) {
+          console.warn('[archive] failed', err);
+          say('');
+          toastError(`Archive failed: ${err?.message || err}`);
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Archive & rebroadcast'; }
+        }
+      });
       $('pixelImportNostrBtn')?.addEventListener('click', () => {
         pixelToolMenuToggle(false);
         openPixelArtImportBrowser();
