@@ -506,3 +506,22 @@ gridlines polish layer). Open follow-ups:
   `overflow-wrap: anywhere; word-break: break-word`, so no horizontal
   scroll.
 - **TMDB auto-fill cleanup** — `docs/TMDB_AUTOFILL_FEATURE.md` removed.
+
+## AdZap creative integration (requested 2026-08-07)
+
+AdZap (the ad network rebuild, `~/Documents/GitHub/AdZap` branch
+`ts-rebuild`) uses standard Artstr `kind:30078` design events as ad
+creatives — same content JSON, plus a required `['t','adzap-ad']` filter
+flag and an optional `['adzap','banner-v1']` profile tag. Full convention:
+`AdZap/docs/ARTSTR_CREATIVES.md`. Artstr-side wishlist, roughly in order:
+
+- [ ] "AdZap banner 800×150" template preset, constrained to a rasterizable
+      layer subset (images / text / shapes), stamping both tags on publish.
+- [ ] Gallery/browse filter excluding `#t=adzap-ad` by default, with a
+      toggle (or an "ads" shelf using the same query).
+- [ ] "Send to AdZap" export: render the design to PNG client-side and open
+      the AdZap builder with coordinate + event id + snapshot prefilled.
+- [ ] (Bigger, standalone value) server-side render endpoint, OG-image
+      style: `/api/render/<naddr>.png` on the Vercel deployment — makes any
+      Artstr design URL-embeddable anywhere Markdown renders; AdZap's
+      live-follow becomes just one consumer.
