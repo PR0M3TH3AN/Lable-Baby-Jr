@@ -40,7 +40,7 @@ Lightning.
 - Images are remote URLs only — never embed binary image data in projects.
 - Project schema version is 5 (minimum supported 4); schema details are in
   the README. Bumping the schema is a significant, documented change.
-- Ignore the empty `.agents/` directory.
+- Agent memory and plans live in `.agents/` — see "Repo memory" below.
 
 ## Backlog
 
@@ -60,3 +60,13 @@ items live in `docs/`).
 - Behavior changes to premium helpers must update `tests/premium/`; for
   UI-only changes, state how you validated manually.
 - Never weaken, skip, or delete tests to make a change pass.
+
+## Repo memory
+
+Curated agent memory lives in `.agents/` (index: `.agents/MEMORY.md`). Read it
+before substantive work — `memory/lessons.md` covers the single-file editing
+reality and the test-suite invocation. Propose additions as files in
+`.agents/proposals/`; trusted memory under `.agents/memory/` changes only
+through reviewed commits. Durable multi-session plans live under
+`.agents/plans/` (the canonical backlog stays `TODO.md`). Code, tests, and
+configuration always outrank memory.
